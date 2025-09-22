@@ -6,11 +6,13 @@
 #include <thrust/execution_policy.h>
 #include <thrust/random.h>
 #include <thrust/remove.h>
+#include <thrust/device_ptr.h>
 
 #include "sceneStructs.h"
 #include "scene.h"
 #include "glm/glm.hpp"
 #include "glm/gtx/norm.hpp"
+#include <glm/gtc/epsilon.hpp>
 #include "utilities.h"
 #include "intersections.h"
 #include "interactions.h"
@@ -226,15 +228,6 @@ __global__ void computeIntersections(
     }
 }
 
-// LOOK: "fake" shader demonstrating what you might do with the info in
-// a ShadeableIntersection, as well as how to use thrust's random number
-// generator. Observe that since the thrust random number generator basically
-// adds "noise" to the iteration, the image should start off noisy and get
-// cleaner as more iterations are computed.
-//
-// Note that this shader does NOT do a BSDF evaluation!
-// Your shaders should handle that - this can allow techniques such as
-// bump mapping.
 __global__ void shadeFakeMaterial(
     int iter,
     int num_paths,
@@ -246,36 +239,40 @@ __global__ void shadeFakeMaterial(
     if (idx < num_paths)
     {
         ShadeableIntersection intersection = shadeableIntersections[idx];
-        if (intersection.t > 0.0f) // if the intersection exists...
+        PathSegment& path = pathSegments[idx];
+
+        if (path.remainingBounces <= 0) {
+            return;
+        }
+
+        if (intersection.t > 0.0f)
         {
-          // Set up the RNG
-          // LOOK: this is how you use thrust's RNG! Please look at
-          // makeSeededRandomEngine as well.
             thrust::default_random_engine rng = makeSeededRandomEngine(iter, idx, 0);
-            thrust::uniform_real_distribution<float> u01(0, 1);
 
             Material material = materials[intersection.materialId];
-            glm::vec3 materialColor = material.color;
+            glm::vec3 intersect = getPointOnRay(path.ray, intersection.t);
+            path.remainingBounces -= 1;
 
-            // If the material indicates that the object was a light, "light" the ray
+            // Use original normal without flipping
+            glm::vec3 N = intersection.surfaceNormal;
+
+            // Light source
             if (material.emittance > 0.0f) {
-                pathSegments[idx].color *= (materialColor * material.emittance);
+                path.color *= (material.color * material.emittance);
+                path.remainingBounces = 0;
+                return;
             }
-            // Otherwise, do some pseudo-lighting computation. This is actually more
-            // like what you would expect from shading in a rasterizer like OpenGL.
-            // TODO: replace this! you should be able to start with basically a one-liner
+            // Diffuse material
             else {
-                float lightTerm = glm::dot(intersection.surfaceNormal, glm::vec3(0.0f, 1.0f, 0.0f));
-                pathSegments[idx].color *= (materialColor * lightTerm) * 0.3f + ((1.0f - intersection.t * 0.02f) * materialColor) * 0.7f;
-                pathSegments[idx].color *= u01(rng); // apply some noise because why not
+                glm::vec3 newDir = calculateRandomDirectionInHemisphere(N, rng);
+                path.ray.origin = intersect + EPSILON * N;
+                path.ray.direction = newDir; // Don't normalize - it's already normalized
+                path.color *= material.color;
             }
-            // If there was no intersection, color the ray black.
-            // Lots of renderers use 4 channel color, RGBA, where A = alpha, often
-            // used for opacity, in which case they can indicate "no opacity".
-            // This can be useful for post-processing and image compositing.
         }
         else {
-            pathSegments[idx].color = glm::vec3(0.0f);
+            path.color = glm::vec3(0.0f);
+            path.remainingBounces = 0;
         }
     }
 }
@@ -290,6 +287,23 @@ __global__ void finalGather(int nPaths, glm::vec3* image, PathSegment* iteration
         PathSegment iterationPath = iterationPaths[index];
         image[iterationPath.pixelIndex] += iterationPath.color;
     }
+}
+
+
+struct is_empty
+{
+    __host__ __device__
+        bool operator()(const PathSegment &x) const { 
+        return (x.remainingBounces <= 0) || (glm::length2(x.color) < EPSILON);
+    }
+};
+
+void streamCompaction(int &N, PathSegment* paths) {
+    thrust::device_ptr<PathSegment> paths_begin = thrust::device_pointer_cast(paths);
+    thrust::device_ptr<PathSegment> paths_end = paths_begin + N;
+
+    auto new_end = thrust::remove_if(thrust::device, paths_begin, paths_end, is_empty());
+    N = static_cast<int>(new_end - paths_begin);
 }
 
 /**
@@ -348,7 +362,7 @@ void pathtrace(uchar4* pbo, int frame, int iter)
     int depth = 0;
     PathSegment* dev_path_end = dev_paths + pixelcount;
     int num_paths = dev_path_end - dev_paths;
-
+    int active_paths = num_paths;
     // --- PathSegment Tracing Stage ---
     // Shoot ray into scene, bounce between objects, push shading chunks
 
@@ -359,10 +373,10 @@ void pathtrace(uchar4* pbo, int frame, int iter)
         cudaMemset(dev_intersections, 0, pixelcount * sizeof(ShadeableIntersection));
 
         // tracing
-        dim3 numblocksPathSegmentTracing = (num_paths + blockSize1d - 1) / blockSize1d;
+        dim3 numblocksPathSegmentTracing = (active_paths + blockSize1d - 1) / blockSize1d;
         computeIntersections<<<numblocksPathSegmentTracing, blockSize1d>>> (
             depth,
-            num_paths,
+            active_paths,
             dev_paths,
             dev_geoms,
             hst_scene->geoms.size(),
@@ -380,15 +394,18 @@ void pathtrace(uchar4* pbo, int frame, int iter)
         // materials you have in the scenefile.
         // TODO: compare between directly shading the path segments and shading
         // path segments that have been reshuffled to be contiguous in memory.
-
-        shadeFakeMaterial<<<numblocksPathSegmentTracing, blockSize1d>>>(
+        //streamCompaction(num_paths, dev_paths);
+        shadeFakeMaterial2 <<<numblocksPathSegmentTracing, blockSize1d>>>(
             iter,
-            num_paths,
+            active_paths,
             dev_intersections,
             dev_paths,
             dev_materials
         );
-        iterationComplete = true; // TODO: should be based off stream compaction results.
+        streamCompaction(active_paths, dev_paths);
+        if (active_paths == 0 || depth >= traceDepth) {
+            iterationComplete = true; // TODO: should be based off stream compaction results.
+        }
 
         if (guiData != NULL)
         {

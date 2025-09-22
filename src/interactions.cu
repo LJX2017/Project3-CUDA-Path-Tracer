@@ -44,6 +44,14 @@ __host__ __device__ glm::vec3 calculateRandomDirectionInHemisphere(
         + sin(around) * over * perpendicularDirection2;
 }
 
+inline glm::vec3 reflect(const glm::vec3& v, const glm::vec3& n) {
+    return v - 2 * glm::dot(v, n) * n;
+}
+
+__host__ __device__ inline float luminance(const glm::vec3& c) {
+    return 0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z;
+}
+
 __host__ __device__ void scatterRay(
     PathSegment & pathSegment,
     glm::vec3 intersect,
@@ -51,7 +59,44 @@ __host__ __device__ void scatterRay(
     const Material &m,
     thrust::default_random_engine &rng)
 {
+
     // TODO: implement this.
     // A basic implementation of pure-diffuse shading will just call the
     // calculateRandomDirectionInHemisphere defined above.
+    if (pathSegment.remainingBounces <= 0) {
+        return;
+    }
+    glm::vec3 N = normal;
+    bool frontFace = glm::dot(pathSegment.ray.direction, N) < 0.0f;
+    if (!frontFace) {
+        N = -N;
+    }
+    pathSegment.remainingBounces -= 1;
+    thrust::uniform_real_distribution<float> u01(0.0f, 1.0f);
+    if (m.emittance > 0.0f) {
+        pathSegment.color *= (m.color * m.emittance);
+        return;
+    }
+    if (m.hasRefractive) {
+        //pass
+        return;
+    }
+    float pDiff = fmaxf(luminance(m.color), 0.0f), pSpec = (m.hasReflective > 0.0f) ? fmaxf(luminance(m.specular.color), 0.0f) : 0.0f;
+
+    pDiff = pDiff / (pDiff + pSpec);
+    if (u01(rng) < pDiff) {
+        // we diffuse
+        glm::vec3 newDir = calculateRandomDirectionInHemisphere(N, rng);
+        //glm::vec3 diffuseColor = sample.length() * glm::abs(glm::dot(N, sample)) * pathSegment.color;
+        pathSegment.ray.origin = intersect + EPSILON * newDir;
+        pathSegment.ray.direction = glm::normalize(newDir);
+        pathSegment.color *= m.color / fmaxf(pDiff, 1e-6f);
+    }
+    else {
+        // we reflect
+        glm::vec3 newDir = reflect(pathSegment.ray.direction, N);
+        pathSegment.ray.origin = intersect + EPSILON * newDir;
+        pathSegment.ray.direction = glm::normalize(newDir);
+        pathSegment.color *= m.specular.color / fmaxf(pDiff, 1e-6f);
+    }
 }
