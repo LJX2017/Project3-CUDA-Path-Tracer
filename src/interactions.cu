@@ -44,10 +44,6 @@ __host__ __device__ glm::vec3 calculateRandomDirectionInHemisphere(
         + sin(around) * over * perpendicularDirection2;
 }
 
-inline glm::vec3 reflect(const glm::vec3& v, const glm::vec3& n) {
-    return v - 2 * glm::dot(v, n) * n;
-}
-
 __host__ __device__ inline float luminance(const glm::vec3& c) {
     return 0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z;
 }
@@ -66,15 +62,11 @@ __host__ __device__ void scatterRay(
     if (pathSegment.remainingBounces <= 0) {
         return;
     }
-    glm::vec3 N = normal;
-    bool frontFace = glm::dot(pathSegment.ray.direction, N) < 0.0f;
-    if (!frontFace) {
-        N = -N;
-    }
     pathSegment.remainingBounces -= 1;
     thrust::uniform_real_distribution<float> u01(0.0f, 1.0f);
     if (m.emittance > 0.0f) {
         pathSegment.color *= (m.color * m.emittance);
+        pathSegment.remainingBounces = 0;
         return;
     }
     if (m.hasRefractive) {
@@ -86,17 +78,16 @@ __host__ __device__ void scatterRay(
     pDiff = pDiff / (pDiff + pSpec);
     if (u01(rng) < pDiff) {
         // we diffuse
-        glm::vec3 newDir = calculateRandomDirectionInHemisphere(N, rng);
-        //glm::vec3 diffuseColor = sample.length() * glm::abs(glm::dot(N, sample)) * pathSegment.color;
-        pathSegment.ray.origin = intersect + EPSILON * newDir;
-        pathSegment.ray.direction = glm::normalize(newDir);
+        glm::vec3 newDir = calculateRandomDirectionInHemisphere(normal, rng);
+        pathSegment.ray.origin = intersect + EPSILON * normal;
+        pathSegment.ray.direction = newDir;
         pathSegment.color *= m.color / fmaxf(pDiff, 1e-6f);
     }
     else {
         // we reflect
-        glm::vec3 newDir = reflect(pathSegment.ray.direction, N);
-        pathSegment.ray.origin = intersect + EPSILON * newDir;
-        pathSegment.ray.direction = glm::normalize(newDir);
-        pathSegment.color *= m.specular.color / fmaxf(pDiff, 1e-6f);
+        glm::vec3 newDir = glm::reflect(pathSegment.ray.direction, normal);
+        pathSegment.ray.origin = intersect + EPSILON * normal;
+        pathSegment.ray.direction = newDir;
+        pathSegment.color *= m.specular.color / fmaxf(1.0f - pDiff, 1e-6f);
     }
 }

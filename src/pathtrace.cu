@@ -277,6 +277,35 @@ __global__ void shadeFakeMaterial(
     }
 }
 
+__global__ void shadeFakeMaterial2(
+    int iter,
+    int num_paths,
+    ShadeableIntersection* shadeableIntersections,
+    PathSegment* pathSegments,
+    Material* materials)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < num_paths)
+    {
+        ShadeableIntersection intersection = shadeableIntersections[idx];
+        PathSegment& path = pathSegments[idx];
+
+        if (path.remainingBounces <= 0) {
+            return;
+        }
+
+        if (intersection.t > 0.0f)
+        {
+            thrust::default_random_engine rng = makeSeededRandomEngine(iter, idx, 0);
+            scatterRay(path, getPointOnRay(path.ray, intersection.t), intersection.surfaceNormal, materials[intersection.materialId], rng);
+        }
+        else {
+            path.color = glm::vec3(0.0f);
+            path.remainingBounces = 0;
+        }
+    }
+}
+
 // Add the current iteration's output to the overall image
 __global__ void finalGather(int nPaths, glm::vec3* image, PathSegment* iterationPaths)
 {
@@ -286,6 +315,19 @@ __global__ void finalGather(int nPaths, glm::vec3* image, PathSegment* iteration
     {
         PathSegment iterationPath = iterationPaths[index];
         image[iterationPath.pixelIndex] += iterationPath.color;
+    }
+}
+
+__global__ void gatherTerminatedPaths(int nPaths, glm::vec3* image, PathSegment* iterationPaths)
+{
+    int index = (blockIdx.x * blockDim.x) + threadIdx.x;
+
+    if (index < nPaths)
+    {
+        PathSegment iterationPath = iterationPaths[index];
+        if (iterationPath.remainingBounces <= 0) {
+            image[iterationPath.pixelIndex] += iterationPath.color;
+        }
     }
 }
 
@@ -394,13 +436,19 @@ void pathtrace(uchar4* pbo, int frame, int iter)
         // materials you have in the scenefile.
         // TODO: compare between directly shading the path segments and shading
         // path segments that have been reshuffled to be contiguous in memory.
-        //streamCompaction(num_paths, dev_paths);
+        streamCompaction(num_paths, dev_paths);
         shadeFakeMaterial2 <<<numblocksPathSegmentTracing, blockSize1d>>>(
             iter,
             active_paths,
             dev_intersections,
             dev_paths,
             dev_materials
+        );
+        dim3 numBlocksPixels = (active_paths + blockSize1d - 1) / blockSize1d;
+        gatherTerminatedPaths << <numBlocksPixels, blockSize1d >> > (
+            num_paths,
+            dev_image,
+            dev_paths
         );
         streamCompaction(active_paths, dev_paths);
         if (active_paths == 0 || depth >= traceDepth) {
@@ -414,8 +462,8 @@ void pathtrace(uchar4* pbo, int frame, int iter)
     }
 
     // Assemble this iteration and apply it to the image
-    dim3 numBlocksPixels = (pixelcount + blockSize1d - 1) / blockSize1d;
-    finalGather<<<numBlocksPixels, blockSize1d>>>(num_paths, dev_image, dev_paths);
+    //dim3 numBlocksPixels = (pixelcount + blockSize1d - 1) / blockSize1d;
+    //finalGather<<<numBlocksPixels, blockSize1d>>>(num_paths, dev_image, dev_paths);
 
     ///////////////////////////////////////////////////////////////////////////
 
