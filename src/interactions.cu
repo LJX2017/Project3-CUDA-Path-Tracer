@@ -76,17 +76,21 @@ __host__ __device__ void scatterRay(
     float pDiff = fmaxf(luminance(m.color), 0.0f), pSpec = (m.hasReflective > 0.0f) ? fmaxf(luminance(m.specular.color), 0.0f) : 0.0f;
 
     pDiff = pDiff / (pDiff + pSpec);
+    if (m.hasReflective) {
+        //fuckfuck
+        pDiff = 0;
+    }
     if (u01(rng) < pDiff) {
         // we diffuse
-        glm::vec3 newDir = calculateRandomDirectionInHemisphere(normal, rng);
-        pathSegment.ray.origin = intersect + EPSILON * normal;
+        glm::vec3 newDir = glm::normalize(calculateRandomDirectionInHemisphere(normal, rng));
+        pathSegment.ray.origin = intersect + EPSILON * newDir;
         pathSegment.ray.direction = newDir;
         pathSegment.color *= m.color / fmaxf(pDiff, 1e-6f);
     }
     else {
         // we reflect
-        glm::vec3 newDir = glm::reflect(pathSegment.ray.direction, normal);
-        pathSegment.ray.origin = intersect + EPSILON * normal;
+        glm::vec3 newDir = glm::normalize(glm::reflect(-pathSegment.ray.direction, normal));
+        pathSegment.ray.origin = intersect + EPSILON * newDir;
         pathSegment.ray.direction = newDir;
         pathSegment.color *= m.specular.color / fmaxf(1.0f - pDiff, 1e-6f);
     }
