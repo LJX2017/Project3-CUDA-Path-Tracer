@@ -12,13 +12,22 @@
 enum GeomType
 {
     SPHERE,
-    CUBE
+    CUBE,
+    MESH
 };
 
 struct Ray
 {
     glm::vec3 origin;
     glm::vec3 direction;
+};
+
+// Triangle stored in world space for GPU ray intersection
+struct Triangle
+{
+    glm::vec3 v0, v1, v2;    // Vertices
+    glm::vec3 n0, n1, n2;    // Vertex normals (for smooth shading)
+    int materialId;
 };
 
 struct Geom
@@ -31,6 +40,14 @@ struct Geom
     glm::mat4 transform;
     glm::mat4 inverseTransform;
     glm::mat4 invTranspose;
+    
+    // For MESH type: indices into the global triangle array
+    int triangleStart;
+    int triangleCount;
+    
+    // Bounding box for mesh (in world space)
+    glm::vec3 boundingBoxMin;
+    glm::vec3 boundingBoxMax;
 };
 
 struct Material

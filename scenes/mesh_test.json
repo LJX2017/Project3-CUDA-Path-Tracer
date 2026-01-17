@@ -1,0 +1,97 @@
+{
+    "Materials":
+    {
+        "light":
+        {
+            "RGB":[1.0, 1.0, 1.0],
+            "EMITTANCE":5.0
+        },
+        "diffuse_white":
+        {
+            "RGB":[0.98, 0.98, 0.98],
+            "METALLIC": 0.0,
+            "ROUGHNESS": 1.0
+        },
+        "diffuse_red":
+        {
+            "RGB":[0.85, 0.35, 0.35],
+            "METALLIC": 0.0,
+            "ROUGHNESS": 1.0
+        },
+        "diffuse_green":
+        {
+            "RGB":[0.35, 0.85, 0.35],
+            "METALLIC": 0.0,
+            "ROUGHNESS": 1.0
+        },
+        "mesh_material":
+        {
+            "RGB":[0.7, 0.5, 0.3],
+            "METALLIC": 0.0,
+            "ROUGHNESS": 0.8
+        }
+    },
+    "Camera":
+    {
+        "RES":[800,800],
+        "FOVY":45.0,
+        "ITERATIONS":5000,
+        "DEPTH":8,
+        "FILE":"mesh_test",
+        "EYE":[0.0,5.0,10.5],
+        "LOOKAT":[0.0,5.0,0.0],
+        "UP":[0.0,1.0,0.0]
+    },
+    "Objects": [
+        {
+            "TYPE": "cube",
+            "MATERIAL": "light",
+            "TRANS": [ 0.0, 10.0, 0.0 ],
+            "ROTAT": [ 0.0, 0.0, 0.0 ],
+            "SCALE": [ 3.0, 0.3, 3.0 ]
+        },
+        {
+            "TYPE": "cube",
+            "MATERIAL": "diffuse_white",
+            "TRANS": [ 0.0, 0.0, 0.0 ],
+            "ROTAT": [ 0.0, 0.0, 0.0 ],
+            "SCALE": [ 10.0, 0.01, 10.0 ]
+        },
+        {
+            "TYPE": "cube",
+            "MATERIAL": "diffuse_white",
+            "TRANS": [ 0.0, 10.0, 0.0 ],
+            "ROTAT": [ 0.0, 0.0, 90.0 ],
+            "SCALE": [ 0.01, 10.0, 10.0 ]
+        },
+        {
+            "TYPE": "cube",
+            "MATERIAL": "diffuse_white",
+            "TRANS": [ 0.0, 5.0, -5.0 ],
+            "ROTAT": [ 0.0, 90.0, 0.0 ],
+            "SCALE": [ 0.01, 10.0, 10.0 ]
+        },
+        {
+            "TYPE": "cube",
+            "MATERIAL": "diffuse_red",
+            "TRANS": [ -5.0, 5.0, 0.0 ],
+            "ROTAT": [ 0.0, 0.0, 0.0 ],
+            "SCALE": [ 0.01, 10.0, 10.0 ]
+        },
+        {
+            "TYPE": "cube",
+            "MATERIAL": "diffuse_green",
+            "TRANS": [ 5.0, 5.0, 0.0 ],
+            "ROTAT": [ 0.0, 0.0, 0.0 ],
+            "SCALE": [ 0.01, 10.0, 10.0 ]
+        },
+        {
+            "TYPE": "mesh",
+            "MATERIAL": "mesh_material",
+            "FILE": "triangle.gltf",
+            "TRANS": [ 0.0, 3.0, 0.0 ],
+            "ROTAT": [ 0.0, 0.0, 0.0 ],
+            "SCALE": [ 3.0, 3.0, 3.0 ]
+        }
+    ]
+}

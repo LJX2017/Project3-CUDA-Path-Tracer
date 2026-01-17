@@ -111,3 +111,90 @@ __host__ __device__ float sphereIntersectionTest(
 
     return glm::length(r.origin - intersectionPoint);
 }
+
+__host__ __device__ float triangleIntersectionTest(
+    const Triangle& tri,
+    const Ray& r,
+    glm::vec3& intersectionPoint,
+    glm::vec3& normal,
+    bool& outside)
+{
+    // Möller-Trumbore algorithm
+    const float EPSILON = 1e-7f;
+    
+    glm::vec3 edge1 = tri.v1 - tri.v0;
+    glm::vec3 edge2 = tri.v2 - tri.v0;
+    
+    glm::vec3 h = glm::cross(r.direction, edge2);
+    float a = glm::dot(edge1, h);
+    
+    // Ray is parallel to triangle
+    if (a > -EPSILON && a < EPSILON)
+    {
+        return -1.0f;
+    }
+    
+    float f = 1.0f / a;
+    glm::vec3 s = r.origin - tri.v0;
+    float u = f * glm::dot(s, h);
+    
+    // Intersection point is outside triangle
+    if (u < 0.0f || u > 1.0f)
+    {
+        return -1.0f;
+    }
+    
+    glm::vec3 q = glm::cross(s, edge1);
+    float v = f * glm::dot(r.direction, q);
+    
+    // Intersection point is outside triangle
+    if (v < 0.0f || u + v > 1.0f)
+    {
+        return -1.0f;
+    }
+    
+    // Compute t to find intersection point
+    float t = f * glm::dot(edge2, q);
+    
+    if (t > EPSILON)
+    {
+        intersectionPoint = r.origin + t * r.direction;
+        
+        // Interpolate normal using barycentric coordinates
+        float w = 1.0f - u - v;
+        normal = glm::normalize(w * tri.n0 + u * tri.n1 + v * tri.n2);
+        
+        // Determine if ray hit front or back face
+        outside = (a > 0.0f);
+        if (!outside)
+        {
+            normal = -normal;
+        }
+        
+        return t;
+    }
+    
+    return -1.0f;
+}
+
+__host__ __device__ bool aabbIntersectionTest(
+    const glm::vec3& boxMin,
+    const glm::vec3& boxMax,
+    const Ray& r,
+    float tMin,
+    float tMax)
+{
+    // Optimized slab method for AABB intersection
+    glm::vec3 invDir = 1.0f / r.direction;
+    
+    glm::vec3 t0 = (boxMin - r.origin) * invDir;
+    glm::vec3 t1 = (boxMax - r.origin) * invDir;
+    
+    glm::vec3 tSmall = glm::min(t0, t1);
+    glm::vec3 tBig = glm::max(t0, t1);
+    
+    tMin = glm::max(tMin, glm::max(tSmall.x, glm::max(tSmall.y, tSmall.z)));
+    tMax = glm::min(tMax, glm::min(tBig.x, glm::min(tBig.y, tBig.z)));
+    
+    return tMin <= tMax;
+}

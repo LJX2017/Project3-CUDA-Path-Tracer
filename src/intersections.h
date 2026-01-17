@@ -71,3 +71,38 @@ __host__ __device__ float sphereIntersectionTest(
     glm::vec3& intersectionPoint,
     glm::vec3& normal,
     bool& outside);
+
+/**
+ * Möller-Trumbore ray-triangle intersection test.
+ * Tests intersection between a ray and a triangle in world space.
+ *
+ * @param tri                The triangle to test against.
+ * @param r                  The ray to test.
+ * @param intersectionPoint  Output parameter for point of intersection.
+ * @param normal             Output parameter for interpolated surface normal.
+ * @param outside            Output param for whether the ray came from outside (always true for single-sided).
+ * @return                   Ray parameter `t` value. -1 if no intersection.
+ */
+__host__ __device__ float triangleIntersectionTest(
+    const Triangle& tri,
+    const Ray& r,
+    glm::vec3& intersectionPoint,
+    glm::vec3& normal,
+    bool& outside);
+
+/**
+ * Ray-AABB intersection test for bounding box culling.
+ *
+ * @param boxMin  Minimum corner of the axis-aligned bounding box.
+ * @param boxMax  Maximum corner of the axis-aligned bounding box.
+ * @param r       The ray to test.
+ * @param tMin    Minimum t value (usually 0 or small epsilon).
+ * @param tMax    Maximum t value (usually the current closest hit distance).
+ * @return        True if the ray intersects the box within [tMin, tMax].
+ */
+__host__ __device__ bool aabbIntersectionTest(
+    const glm::vec3& boxMin,
+    const glm::vec3& boxMax,
+    const Ray& r,
+    float tMin,
+    float tMax);
