@@ -16,9 +16,50 @@
 #include <string>
 #include <unordered_map>
 #include <algorithm>
+#include <numeric>
+#include <stack>
 
 using namespace std;
 using json = nlohmann::json;
+
+// ============================================================================
+// BVH Construction Helpers
+// ============================================================================
+
+// Compute AABB for a triangle
+static void computeTriangleBounds(const Triangle& tri, glm::vec3& boundsMin, glm::vec3& boundsMax)
+{
+    boundsMin = glm::min(glm::min(tri.v0, tri.v1), tri.v2);
+    boundsMax = glm::max(glm::max(tri.v0, tri.v1), tri.v2);
+}
+
+// Compute centroid of a triangle
+static glm::vec3 computeTriangleCentroid(const Triangle& tri)
+{
+    return (tri.v0 + tri.v1 + tri.v2) / 3.0f;
+}
+
+// Surface area of an AABB
+static float surfaceArea(const glm::vec3& boundsMin, const glm::vec3& boundsMax)
+{
+    glm::vec3 d = boundsMax - boundsMin;
+    return 2.0f * (d.x * d.y + d.y * d.z + d.z * d.x);
+}
+
+// Structure for building BVH
+struct BVHBuildEntry
+{
+    int parentIndex;
+    int start;
+    int end;
+    bool isLeftChild;
+};
+
+// SAH cost constants
+static const float TRAVERSAL_COST = 1.0f;
+static const float INTERSECTION_COST = 1.0f;
+static const int MAX_LEAF_SIZE = 4;  // Maximum triangles per leaf
+static const int SAH_BINS = 12;      // Number of bins for SAH evaluation
 
 // Dummy image loader callback for tinygltf (we don't use textures yet, just geometry)
 static bool DummyLoadImageData(tinygltf::Image* image, const int image_idx, std::string* err,
@@ -194,6 +235,9 @@ void Scene::loadFromJSON(const std::string& jsonName)
     
     cout << "Scene loaded: " << geoms.size() << " geometry objects, " 
          << triangles.size() << " triangles total" << endl;
+    
+    // Build BVH for all meshes
+    buildBVH();
 }
 
 void Scene::loadGLTF(const std::string& gltfPath, const glm::mat4& transform, int materialId)
@@ -405,4 +449,301 @@ void Scene::loadGLTF(const std::string& gltfPath, const glm::mat4& transform, in
             }
         }
     }
+}
+
+// ============================================================================
+// BVH Construction Implementation
+// ============================================================================
+
+void Scene::buildBVH()
+{
+    // Initialize BVHInfo for all geoms (even non-meshes will have empty entries)
+    bvhInfos.resize(geoms.size());
+    
+    int totalMeshTriangles = 0;
+    int totalBVHNodes = 0;
+    
+    // First pass: count triangles in meshes and build BVH for each mesh
+    for (size_t i = 0; i < geoms.size(); i++)
+    {
+        if (geoms[i].type == MESH && geoms[i].triangleCount > 0)
+        {
+            buildMeshBVH(static_cast<int>(i));
+            totalMeshTriangles += geoms[i].triangleCount;
+            totalBVHNodes += bvhInfos[i].nodeCount;
+        }
+        else
+        {
+            // Non-mesh geometry: empty BVH info
+            bvhInfos[i].nodeOffset = 0;
+            bvhInfos[i].nodeCount = 0;
+            bvhInfos[i].triangleOffset = 0;
+            bvhInfos[i].triangleCount = 0;
+        }
+    }
+    
+    cout << "BVH construction complete: " << totalBVHNodes << " nodes for " 
+         << totalMeshTriangles << " triangles" << endl;
+}
+
+void Scene::buildMeshBVH(int geomIndex)
+{
+    Geom& geom = geoms[geomIndex];
+    BVHInfo& info = bvhInfos[geomIndex];
+    
+    int triStart = geom.triangleStart;
+    int triCount = geom.triangleCount;
+    
+    if (triCount == 0) return;
+    
+    // Store the starting offset for this mesh's BVH nodes
+    info.nodeOffset = static_cast<int>(bvhNodes.size());
+    info.triangleOffset = triStart;
+    info.triangleCount = triCount;
+    
+    // Create local triangle indices (will be reordered during BVH construction)
+    vector<int> triIndices(triCount);
+    iota(triIndices.begin(), triIndices.end(), 0);  // 0, 1, 2, ...
+    
+    // Precompute triangle bounds and centroids
+    vector<glm::vec3> triCentroids(triCount);
+    vector<glm::vec3> triBoundsMin(triCount);
+    vector<glm::vec3> triBoundsMax(triCount);
+    
+    for (int i = 0; i < triCount; i++)
+    {
+        const Triangle& tri = triangles[triStart + i];
+        computeTriangleBounds(tri, triBoundsMin[i], triBoundsMax[i]);
+        triCentroids[i] = computeTriangleCentroid(tri);
+    }
+    
+    // Build stack for iterative construction
+    stack<BVHBuildEntry> buildStack;
+    
+    // Push root node
+    BVHBuildEntry rootEntry;
+    rootEntry.parentIndex = -1;
+    rootEntry.start = 0;
+    rootEntry.end = triCount;
+    rootEntry.isLeftChild = false;
+    buildStack.push(rootEntry);
+    
+    // Reserve space for nodes (rough estimate: 2*N - 1 for N leaves)
+    bvhNodes.reserve(bvhNodes.size() + 2 * triCount);
+    
+    while (!buildStack.empty())
+    {
+        BVHBuildEntry entry = buildStack.top();
+        buildStack.pop();
+        
+        int start = entry.start;
+        int end = entry.end;
+        int numPrimitives = end - start;
+        
+        // Create new node
+        int nodeIndex = static_cast<int>(bvhNodes.size());
+        bvhNodes.emplace_back();
+        BVHNode& node = bvhNodes.back();
+        
+        // Update parent's child pointer
+        if (entry.parentIndex >= 0)
+        {
+            if (entry.isLeftChild)
+                bvhNodes[entry.parentIndex].leftChild = nodeIndex;
+            else
+                bvhNodes[entry.parentIndex].rightChild = nodeIndex;
+        }
+        
+        // Compute bounds for all primitives in this node
+        node.boundsMin = glm::vec3(FLT_MAX);
+        node.boundsMax = glm::vec3(-FLT_MAX);
+        for (int i = start; i < end; i++)
+        {
+            int triIdx = triIndices[i];
+            node.boundsMin = glm::min(node.boundsMin, triBoundsMin[triIdx]);
+            node.boundsMax = glm::max(node.boundsMax, triBoundsMax[triIdx]);
+        }
+        
+        // Check if this should be a leaf node
+        if (numPrimitives <= MAX_LEAF_SIZE)
+        {
+            // Create leaf node
+            node.leftChild = -1;  // Mark as leaf
+            node.rightChild = -1;
+            node.primitiveOffset = start;  // Will be adjusted later
+            node.primitiveCount = numPrimitives;
+            continue;
+        }
+        
+        // Compute centroid bounds for SAH
+        glm::vec3 centroidMin(FLT_MAX);
+        glm::vec3 centroidMax(-FLT_MAX);
+        for (int i = start; i < end; i++)
+        {
+            int triIdx = triIndices[i];
+            centroidMin = glm::min(centroidMin, triCentroids[triIdx]);
+            centroidMax = glm::max(centroidMax, triCentroids[triIdx]);
+        }
+        
+        // Choose split axis (longest extent of centroid bounds)
+        glm::vec3 centroidExtent = centroidMax - centroidMin;
+        int splitAxis = 0;
+        if (centroidExtent.y > centroidExtent.x) splitAxis = 1;
+        if (centroidExtent.z > centroidExtent[splitAxis]) splitAxis = 2;
+        
+        // If centroids are coincident, create a leaf
+        if (centroidExtent[splitAxis] < 1e-6f)
+        {
+            node.leftChild = -1;
+            node.rightChild = -1;
+            node.primitiveOffset = start;
+            node.primitiveCount = numPrimitives;
+            continue;
+        }
+        
+        // SAH binning
+        struct Bin {
+            int count = 0;
+            glm::vec3 boundsMin = glm::vec3(FLT_MAX);
+            glm::vec3 boundsMax = glm::vec3(-FLT_MAX);
+        };
+        Bin bins[SAH_BINS];
+        
+        float binScale = SAH_BINS / centroidExtent[splitAxis];
+        
+        // Assign primitives to bins
+        for (int i = start; i < end; i++)
+        {
+            int triIdx = triIndices[i];
+            int binIdx = glm::min(SAH_BINS - 1,
+                static_cast<int>((triCentroids[triIdx][splitAxis] - centroidMin[splitAxis]) * binScale));
+            bins[binIdx].count++;
+            bins[binIdx].boundsMin = glm::min(bins[binIdx].boundsMin, triBoundsMin[triIdx]);
+            bins[binIdx].boundsMax = glm::max(bins[binIdx].boundsMax, triBoundsMax[triIdx]);
+        }
+        
+        // Evaluate SAH cost for each split position
+        float minCost = FLT_MAX;
+        int minCostSplit = 0;
+        
+        // Precompute prefix costs (left side)
+        float leftArea[SAH_BINS - 1];
+        int leftCount[SAH_BINS - 1];
+        glm::vec3 leftBoundsMin = glm::vec3(FLT_MAX);
+        glm::vec3 leftBoundsMax = glm::vec3(-FLT_MAX);
+        int leftN = 0;
+        
+        for (int i = 0; i < SAH_BINS - 1; i++)
+        {
+            leftBoundsMin = glm::min(leftBoundsMin, bins[i].boundsMin);
+            leftBoundsMax = glm::max(leftBoundsMax, bins[i].boundsMax);
+            leftN += bins[i].count;
+            leftArea[i] = surfaceArea(leftBoundsMin, leftBoundsMax);
+            leftCount[i] = leftN;
+        }
+        
+        // Compute costs sweeping from right
+        glm::vec3 rightBoundsMin = glm::vec3(FLT_MAX);
+        glm::vec3 rightBoundsMax = glm::vec3(-FLT_MAX);
+        int rightN = 0;
+        
+        for (int i = SAH_BINS - 1; i > 0; i--)
+        {
+            rightBoundsMin = glm::min(rightBoundsMin, bins[i].boundsMin);
+            rightBoundsMax = glm::max(rightBoundsMax, bins[i].boundsMax);
+            rightN += bins[i].count;
+            
+            float rightArea = surfaceArea(rightBoundsMin, rightBoundsMax);
+            float cost = TRAVERSAL_COST + INTERSECTION_COST * 
+                (leftCount[i-1] * leftArea[i-1] + rightN * rightArea) / surfaceArea(node.boundsMin, node.boundsMax);
+            
+            if (cost < minCost)
+            {
+                minCost = cost;
+                minCostSplit = i;
+            }
+        }
+        
+        // Check if splitting is better than creating a leaf
+        float leafCost = INTERSECTION_COST * numPrimitives;
+        if (minCost >= leafCost && numPrimitives <= MAX_LEAF_SIZE * 2)
+        {
+            // Create leaf instead
+            node.leftChild = -1;
+            node.rightChild = -1;
+            node.primitiveOffset = start;
+            node.primitiveCount = numPrimitives;
+            continue;
+        }
+        
+        // Partition primitives based on SAH split
+        float splitPos = centroidMin[splitAxis] + minCostSplit * centroidExtent[splitAxis] / SAH_BINS;
+        
+        auto midIter = partition(triIndices.begin() + start, triIndices.begin() + end,
+            [&](int triIdx) {
+                return triCentroids[triIdx][splitAxis] < splitPos;
+            });
+        int mid = static_cast<int>(midIter - triIndices.begin());
+        
+        // Ensure we don't create empty children
+        if (mid == start || mid == end)
+        {
+            mid = (start + end) / 2;
+            nth_element(triIndices.begin() + start, triIndices.begin() + mid, triIndices.begin() + end,
+                [&](int a, int b) {
+                    return triCentroids[a][splitAxis] < triCentroids[b][splitAxis];
+                });
+        }
+        
+        // Initialize as interior node (children will be filled in when processed)
+        node.leftChild = -1;  // Placeholder
+        node.rightChild = -1;
+        node.primitiveOffset = 0;
+        node.primitiveCount = 0;
+        
+        // Push children onto stack (right first so left is processed first)
+        BVHBuildEntry rightEntry;
+        rightEntry.parentIndex = nodeIndex;
+        rightEntry.start = mid;
+        rightEntry.end = end;
+        rightEntry.isLeftChild = false;
+        buildStack.push(rightEntry);
+        
+        BVHBuildEntry leftEntry;
+        leftEntry.parentIndex = nodeIndex;
+        leftEntry.start = start;
+        leftEntry.end = mid;
+        leftEntry.isLeftChild = true;
+        buildStack.push(leftEntry);
+    }
+    
+    // Reorder triangles according to BVH layout and fix primitive offsets
+    vector<Triangle> reorderedTris(triCount);
+    vector<int> newTriIndices(triCount);
+    
+    // First, create the reordered triangle list based on triIndices
+    for (int i = 0; i < triCount; i++)
+    {
+        reorderedTris[i] = triangles[triStart + triIndices[i]];
+    }
+    
+    // Copy back to original triangle array
+    for (int i = 0; i < triCount; i++)
+    {
+        triangles[triStart + i] = reorderedTris[i];
+    }
+    
+    // Update node count
+    info.nodeCount = static_cast<int>(bvhNodes.size()) - info.nodeOffset;
+    
+    // Update geom's bounding box from root node
+    if (info.nodeCount > 0)
+    {
+        const BVHNode& root = bvhNodes[info.nodeOffset];
+        geom.boundingBoxMin = root.boundsMin;
+        geom.boundingBoxMax = root.boundsMax;
+    }
+    
+    cout << "  Built BVH for mesh " << geomIndex << ": " << info.nodeCount 
+         << " nodes, " << triCount << " triangles" << endl;
 }

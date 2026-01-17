@@ -86,6 +86,11 @@ static ShadeableIntersection* dev_intersections = NULL;
 static Triangle* dev_triangles = NULL;
 static int num_triangles = 0;
 
+// BVH data
+static BVHNode* dev_bvhNodes = NULL;
+static BVHInfo* dev_bvhInfos = NULL;
+static int num_bvhNodes = 0;
+
 void InitDataContainer(GuiDataContainer* imGuiData)
 {
     guiData = imGuiData;
@@ -121,6 +126,21 @@ void pathtraceInit(Scene* scene)
         printf("Allocated %d triangles on GPU (%zu bytes)\n", num_triangles, num_triangles * sizeof(Triangle));
     }
 
+    // Allocate and copy BVH data
+    num_bvhNodes = static_cast<int>(scene->bvhNodes.size());
+    if (num_bvhNodes > 0)
+    {
+        cudaMalloc(&dev_bvhNodes, num_bvhNodes * sizeof(BVHNode));
+        cudaMemcpy(dev_bvhNodes, scene->bvhNodes.data(), num_bvhNodes * sizeof(BVHNode), cudaMemcpyHostToDevice);
+        printf("Allocated %d BVH nodes on GPU (%zu bytes)\n", num_bvhNodes, num_bvhNodes * sizeof(BVHNode));
+    }
+    
+    if (!scene->bvhInfos.empty())
+    {
+        cudaMalloc(&dev_bvhInfos, scene->bvhInfos.size() * sizeof(BVHInfo));
+        cudaMemcpy(dev_bvhInfos, scene->bvhInfos.data(), scene->bvhInfos.size() * sizeof(BVHInfo), cudaMemcpyHostToDevice);
+    }
+
     checkCUDAError("pathtraceInit");
 }
 
@@ -132,6 +152,8 @@ void pathtraceFree()
     cudaFree(dev_materials);
     cudaFree(dev_intersections);
     cudaFree(dev_triangles);
+    cudaFree(dev_bvhNodes);
+    cudaFree(dev_bvhInfos);
 
     checkCUDAError("pathtraceFree");
 }
@@ -176,6 +198,8 @@ __global__ void computeIntersections(
     Geom* geoms,
     int geoms_size,
     Triangle* triangles,
+    BVHNode* bvhNodes,
+    BVHInfo* bvhInfos,
     ShadeableIntersection* intersections)
 {
     int path_index = blockIdx.x * blockDim.x + threadIdx.x;
@@ -236,19 +260,27 @@ __global__ void computeIntersections(
                     continue;
                 }
                 
-                // Test all triangles in this mesh
-                for (int triIdx = geom.triangleStart; triIdx < geom.triangleStart + geom.triangleCount; triIdx++)
+                // Use BVH traversal for mesh intersection
+                BVHInfo& info = bvhInfos[i];
+                if (info.nodeCount > 0 && bvhNodes != nullptr)
                 {
-                    t = triangleIntersectionTest(triangles[triIdx], pathSegment.ray, 
-                                                 tmp_intersect, tmp_normal, tmp_outside);
-                    if (t > 0.0f && t_min > t)
+                    float hitT;
+                    glm::vec3 hitNormal;
+                    int hitMatId;
+                    bool hitOutside;
+                    
+                    if (bvhIntersect(pathSegment.ray, bvhNodes, info.nodeOffset,
+                                     triangles, info.triangleOffset, t_min,
+                                     hitT, hitNormal, hitMatId, hitOutside))
                     {
-                        t_min = t;
-                        hit_geom_index = i;
-                        hit_material_id = triangles[triIdx].materialId;
-                        intersect_point = tmp_intersect;
-                        normal = tmp_normal;
-                        outside = tmp_outside;
+                        if (hitT > 0.0f && hitT < t_min)
+                        {
+                            t_min = hitT;
+                            hit_geom_index = i;
+                            hit_material_id = hitMatId;
+                            normal = hitNormal;
+                            outside = hitOutside;
+                        }
                     }
                 }
             }
@@ -469,6 +501,8 @@ void pathtrace(uchar4* pbo, int frame, int iter)
             dev_geoms,
             hst_scene->geoms.size(),
             dev_triangles,
+            dev_bvhNodes,
+            dev_bvhInfos,
             dev_intersections
         );
         checkCUDAError("trace one bounce");

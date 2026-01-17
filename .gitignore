@@ -96,7 +96,7 @@ $RECYCLE.BIN/
 .idea/workspace.xml
 .idea/tasks.xml
 .idea/dictionaries
-
+stanford_dragon_pbr/
 # Sensitive or high-churn files:
 .idea/dataSources.ids
 .idea/dataSources.xml

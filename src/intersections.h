@@ -106,3 +106,53 @@ __host__ __device__ bool aabbIntersectionTest(
     const Ray& r,
     float tMin,
     float tMax);
+
+/**
+ * Ray-AABB intersection test that also returns the entry distance.
+ * Used for BVH traversal ordering (front-to-back).
+ *
+ * @param boxMin  Minimum corner of the axis-aligned bounding box.
+ * @param boxMax  Maximum corner of the axis-aligned bounding box.
+ * @param r       The ray to test.
+ * @param invDir  Precomputed 1/direction for efficiency.
+ * @param tMin    Minimum t value (usually 0 or small epsilon).
+ * @param tMax    Maximum t value (usually the current closest hit distance).
+ * @param tEntry  Output: entry distance if hit.
+ * @return        True if the ray intersects the box within [tMin, tMax].
+ */
+__host__ __device__ bool aabbIntersectionTestWithDist(
+    const glm::vec3& boxMin,
+    const glm::vec3& boxMax,
+    const Ray& r,
+    const glm::vec3& invDir,
+    float tMin,
+    float tMax,
+    float& tEntry);
+
+/**
+ * BVH traversal for ray-mesh intersection.
+ * Uses iterative stack-based traversal with front-to-back ordering.
+ *
+ * @param ray               The ray to test.
+ * @param bvhNodes          Array of BVH nodes.
+ * @param nodeOffset        Offset into bvhNodes for this mesh's BVH.
+ * @param triangles         Array of triangles (reordered for BVH).
+ * @param triangleOffset    Offset into triangles for this mesh.
+ * @param currentT          Current closest hit distance (for early termination).
+ * @param hitT              Output: distance to closest hit.
+ * @param hitNormal         Output: normal at closest hit.
+ * @param hitMaterialId     Output: material ID of closest hit.
+ * @param hitOutside        Output: whether ray hit from outside.
+ * @return                  True if any triangle was hit.
+ */
+__device__ bool bvhIntersect(
+    const Ray& ray,
+    const BVHNode* bvhNodes,
+    int nodeOffset,
+    const Triangle* triangles,
+    int triangleOffset,
+    float currentT,
+    float& hitT,
+    glm::vec3& hitNormal,
+    int& hitMaterialId,
+    bool& hitOutside);

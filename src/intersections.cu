@@ -198,3 +198,131 @@ __host__ __device__ bool aabbIntersectionTest(
     
     return tMin <= tMax;
 }
+
+__host__ __device__ bool aabbIntersectionTestWithDist(
+    const glm::vec3& boxMin,
+    const glm::vec3& boxMax,
+    const Ray& r,
+    const glm::vec3& invDir,
+    float tMin,
+    float tMax,
+    float& tEntry)
+{
+    // Optimized slab method for AABB intersection with entry distance
+    glm::vec3 t0 = (boxMin - r.origin) * invDir;
+    glm::vec3 t1 = (boxMax - r.origin) * invDir;
+    
+    glm::vec3 tSmall = glm::min(t0, t1);
+    glm::vec3 tBig = glm::max(t0, t1);
+    
+    float tEnter = glm::max(tMin, glm::max(tSmall.x, glm::max(tSmall.y, tSmall.z)));
+    float tExit = glm::min(tMax, glm::min(tBig.x, glm::min(tBig.y, tBig.z)));
+    
+    tEntry = tEnter;
+    return tEnter <= tExit;
+}
+
+__device__ bool bvhIntersect(
+    const Ray& ray,
+    const BVHNode* bvhNodes,
+    int nodeOffset,
+    const Triangle* triangles,
+    int triangleOffset,
+    float currentT,
+    float& hitT,
+    glm::vec3& hitNormal,
+    int& hitMaterialId,
+    bool& hitOutside)
+{
+    // Precompute inverse direction for faster AABB tests
+    glm::vec3 invDir = 1.0f / ray.direction;
+    
+    // Stack for iterative traversal
+    int stack[BVH_MAX_STACK_DEPTH];
+    int stackPtr = 0;
+    
+    // Start with root node
+    stack[stackPtr++] = nodeOffset;
+    
+    bool hit = false;
+    float closestT = currentT;
+    
+    while (stackPtr > 0)
+    {
+        // Pop node from stack
+        int nodeIdx = stack[--stackPtr];
+        const BVHNode& node = bvhNodes[nodeIdx];
+        
+        // Check if ray intersects this node's bounding box
+        float tEntry;
+        if (!aabbIntersectionTestWithDist(node.boundsMin, node.boundsMax, 
+                                          ray, invDir, 0.0f, closestT, tEntry))
+        {
+            continue;
+        }
+        
+        if (node.isLeaf())
+        {
+            // Leaf node: test all triangles
+            for (int i = 0; i < node.primitiveCount; i++)
+            {
+                int triIdx = triangleOffset + node.primitiveOffset + i;
+                const Triangle& tri = triangles[triIdx];
+                
+                glm::vec3 tempIntersect, tempNormal;
+                bool tempOutside;
+                float t = triangleIntersectionTest(tri, ray, tempIntersect, tempNormal, tempOutside);
+                
+                if (t > 0.0f && t < closestT)
+                {
+                    closestT = t;
+                    hitT = t;
+                    hitNormal = tempNormal;
+                    hitMaterialId = tri.materialId;
+                    hitOutside = tempOutside;
+                    hit = true;
+                }
+            }
+        }
+        else
+        {
+            // Interior node: push children onto stack
+            // We want to traverse closer child first, so push farther child first
+            const BVHNode& leftChild = bvhNodes[node.leftChild];
+            const BVHNode& rightChild = bvhNodes[node.rightChild];
+            
+            float tLeftEntry, tRightEntry;
+            bool hitLeft = aabbIntersectionTestWithDist(leftChild.boundsMin, leftChild.boundsMax,
+                                                        ray, invDir, 0.0f, closestT, tLeftEntry);
+            bool hitRight = aabbIntersectionTestWithDist(rightChild.boundsMin, rightChild.boundsMax,
+                                                         ray, invDir, 0.0f, closestT, tRightEntry);
+            
+            // Push children in order: farther one first (so closer one is popped first)
+            if (hitLeft && hitRight)
+            {
+                if (tLeftEntry < tRightEntry)
+                {
+                    // Left is closer, push right first
+                    if (stackPtr < BVH_MAX_STACK_DEPTH) stack[stackPtr++] = node.rightChild;
+                    if (stackPtr < BVH_MAX_STACK_DEPTH) stack[stackPtr++] = node.leftChild;
+                }
+                else
+                {
+                    // Right is closer, push left first
+                    if (stackPtr < BVH_MAX_STACK_DEPTH) stack[stackPtr++] = node.leftChild;
+                    if (stackPtr < BVH_MAX_STACK_DEPTH) stack[stackPtr++] = node.rightChild;
+                }
+            }
+            else if (hitLeft)
+            {
+                if (stackPtr < BVH_MAX_STACK_DEPTH) stack[stackPtr++] = node.leftChild;
+            }
+            else if (hitRight)
+            {
+                if (stackPtr < BVH_MAX_STACK_DEPTH) stack[stackPtr++] = node.rightChild;
+            }
+        }
+    }
+    
+    return hit;
+}

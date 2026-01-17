@@ -101,3 +101,38 @@ struct ShadeableIntersection
       return materialId < other.materialId; 
   }
 };
+
+// ============================================================================
+// BVH (Bounding Volume Hierarchy) Structures
+// ============================================================================
+
+// Maximum BVH traversal stack depth (should be enough for most scenes)
+#define BVH_MAX_STACK_DEPTH 64
+
+// BVH Node for GPU traversal
+// Uses a compact linear representation where:
+// - Interior nodes: leftChild is first child index, rightChild is second child index
+// - Leaf nodes: leftChild = -1, primitiveOffset and primitiveCount store triangle info
+struct BVHNode
+{
+    glm::vec3 boundsMin;    // AABB minimum corner
+    glm::vec3 boundsMax;    // AABB maximum corner
+    
+    int leftChild;          // Index of left child (-1 for leaf nodes)
+    int rightChild;         // Index of right child
+    
+    // For leaf nodes only
+    int primitiveOffset;    // Start index in triangle array
+    int primitiveCount;     // Number of triangles (0 for interior nodes)
+    
+    __host__ __device__ bool isLeaf() const { return leftChild == -1; }
+};
+
+// BVH metadata stored per-mesh
+struct BVHInfo
+{
+    int nodeOffset;     // Offset into global BVH node array
+    int nodeCount;      // Number of nodes in this mesh's BVH
+    int triangleOffset; // Offset into reordered triangle array
+    int triangleCount;  // Number of triangles
+};
