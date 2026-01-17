@@ -44,8 +44,39 @@ __host__ __device__ glm::vec3 calculateRandomDirectionInHemisphere(
         + sin(around) * over * perpendicularDirection2;
 }
 
-__host__ __device__ inline float luminance(const glm::vec3& c) {
-    return 0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z;
+// Schlick's Fresnel approximation
+__host__ __device__ inline glm::vec3 fresnelSchlick(float cosTheta, const glm::vec3& F0) {
+    return F0 + (1.0f - F0) * powf(fmaxf(1.0f - cosTheta, 0.0f), 5.0f);
+}
+
+// Sample GGX microfacet normal (importance sampling)
+__host__ __device__ glm::vec3 sampleGGX(
+    const glm::vec3& normal,
+    float roughness,
+    thrust::default_random_engine& rng)
+{
+    thrust::uniform_real_distribution<float> u01(0.0f, 1.0f);
+    float xi1 = u01(rng);
+    float xi2 = u01(rng);
+    
+    float a = roughness * roughness;
+    float a2 = a * a;
+    
+    // Sample spherical coordinates
+    float phi = TWO_PI * xi1;
+    float cosTheta = sqrtf((1.0f - xi2) / (1.0f + (a2 - 1.0f) * xi2));
+    float sinTheta = sqrtf(1.0f - cosTheta * cosTheta);
+    
+    // Convert to Cartesian (local space)
+    glm::vec3 H_local(sinTheta * cosf(phi), sinTheta * sinf(phi), cosTheta);
+    
+    // Build tangent space basis
+    glm::vec3 up = fabsf(normal.z) < 0.999f ? glm::vec3(0, 0, 1) : glm::vec3(1, 0, 0);
+    glm::vec3 tangent = glm::normalize(glm::cross(up, normal));
+    glm::vec3 bitangent = glm::cross(normal, tangent);
+    
+    // Transform to world space
+    return glm::normalize(tangent * H_local.x + bitangent * H_local.y + normal * H_local.z);
 }
 
 __host__ __device__ void scatterRay(
@@ -55,43 +86,88 @@ __host__ __device__ void scatterRay(
     const Material &m,
     thrust::default_random_engine &rng)
 {
-
-    // TODO: implement this.
-    // A basic implementation of pure-diffuse shading will just call the
-    // calculateRandomDirectionInHemisphere defined above.
     if (pathSegment.remainingBounces <= 0) {
         return;
     }
     pathSegment.remainingBounces -= 1;
     thrust::uniform_real_distribution<float> u01(0.0f, 1.0f);
+    
+    // Emissive material - terminate and accumulate light
     if (m.emittance > 0.0f) {
         pathSegment.color *= (m.color * m.emittance);
         pathSegment.remainingBounces = 0;
         return;
     }
-    if (m.hasRefractive) {
-        //pass
+    
+    // Ensure normal faces the ray
+    glm::vec3 N = normal;
+    bool entering = glm::dot(pathSegment.ray.direction, N) < 0.0f;
+    if (!entering) {
+        N = -N;
+    }
+    
+    // Handle transparent/refractive materials
+    if (m.transparency > 0.0f && u01(rng) < m.transparency) {
+        float eta = entering ? (1.0f / m.indexOfRefraction) : m.indexOfRefraction;
+        glm::vec3 refractDir = glm::refract(pathSegment.ray.direction, N, eta);
+        
+        // Total internal reflection check
+        if (glm::length(refractDir) < 0.001f) {
+            // Total internal reflection - reflect instead
+            glm::vec3 reflectDir = glm::reflect(pathSegment.ray.direction, N);
+            pathSegment.ray.origin = intersect + EPSILON * reflectDir;
+            pathSegment.ray.direction = reflectDir;
+        } else {
+            pathSegment.ray.origin = intersect - EPSILON * N; // Go through surface
+            pathSegment.ray.direction = glm::normalize(refractDir);
+        }
+        // Glass is typically colorless, but tinted glass would multiply by color
+        pathSegment.color *= m.color;
         return;
     }
-    float pDiff = fmaxf(luminance(m.color), 0.0f), pSpec = (m.hasReflective > 0.0f) ? fmaxf(luminance(m.specular.color), 0.0f) : 0.0f;
-
-    pDiff = pDiff / (pDiff + pSpec);
-    if (m.hasReflective) {
-        //fuckfuck
-        pDiff = 0;
-    }
-    if (u01(rng) < pDiff) {
-        // we diffuse
-        glm::vec3 newDir = glm::normalize(calculateRandomDirectionInHemisphere(normal, rng));
-        pathSegment.ray.origin = intersect + EPSILON * newDir;
-        pathSegment.ray.direction = newDir;
-        pathSegment.color *= m.color / fmaxf(pDiff, 1e-6f);
+    
+    // PBR metallic-roughness workflow
+    // F0: reflectance at normal incidence
+    // Dielectrics: ~0.04, Metals: base color
+    glm::vec3 F0 = glm::mix(glm::vec3(0.04f), m.color, m.metallic);
+    
+    // View direction (pointing away from surface)
+    glm::vec3 V = -pathSegment.ray.direction;
+    float NdotV = fmaxf(glm::dot(N, V), 0.001f);
+    
+    // Fresnel at view angle - determines specular probability
+    glm::vec3 fresnel = fresnelSchlick(NdotV, F0);
+    float pSpecular = (fresnel.x + fresnel.y + fresnel.z) / 3.0f;
+    
+    // Clamp roughness to avoid division issues
+    float roughness = fmaxf(m.roughness, 0.04f);
+    
+    if (u01(rng) < pSpecular) {
+        // Specular reflection (GGX microfacet)
+        glm::vec3 H = sampleGGX(N, roughness, rng);
+        glm::vec3 newDir = glm::reflect(-V, H);
+        
+        // Ensure reflection is above surface
+        if (glm::dot(newDir, N) <= 0.0f) {
+            // Fallback to perfect reflection if sampled direction is invalid
+            newDir = glm::reflect(pathSegment.ray.direction, N);
+        }
+        
+        pathSegment.ray.origin = intersect + EPSILON * N;
+        pathSegment.ray.direction = glm::normalize(newDir);
+        
+        // Specular color: metals use base color, dielectrics use white
+        glm::vec3 specColor = glm::mix(glm::vec3(1.0f), m.color, m.metallic);
+        pathSegment.color *= specColor * fresnel / fmaxf(pSpecular, 0.001f);
     }
     else {
-        // we reflect
-        glm::vec3 newDir = glm::normalize(glm::reflect(-pathSegment.ray.direction, normal));
-        pathSegment.ray.origin = intersect + EPSILON * newDir;
+        // Diffuse reflection (cosine-weighted hemisphere)
+        glm::vec3 newDir = calculateRandomDirectionInHemisphere(N, rng);
+        pathSegment.ray.origin = intersect + EPSILON * N;
         pathSegment.ray.direction = newDir;
-        pathSegment.color *= m.specular.color / fmaxf(1.0f - pDiff, 1e-6f);
+        
+        // Diffuse color: metals have no diffuse, dielectrics use base color
+        glm::vec3 diffuseColor = m.color * (1.0f - m.metallic);
+        pathSegment.color *= diffuseColor / fmaxf(1.0f - pSpecular, 0.001f);
     }
 }

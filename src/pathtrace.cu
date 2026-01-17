@@ -6,6 +6,7 @@
 #include <thrust/execution_policy.h>
 #include <thrust/random.h>
 #include <thrust/remove.h>
+#include <thrust/sort.h>
 #include <thrust/device_ptr.h>
 
 #include "sceneStructs.h"
@@ -340,12 +341,18 @@ struct is_empty
     }
 };
 
-void streamCompaction(int &N, PathSegment* paths) {
+__host__ __device__ void streamCompaction(int &N, PathSegment* paths) {
     thrust::device_ptr<PathSegment> paths_begin = thrust::device_pointer_cast(paths);
     thrust::device_ptr<PathSegment> paths_end = paths_begin + N;
 
     auto new_end = thrust::remove_if(thrust::device, paths_begin, paths_end, is_empty());
     N = static_cast<int>(new_end - paths_begin);
+}
+
+__host__ __device__ void sortByMaterial(int N, PathSegment* paths, ShadeableIntersection* intersections) {
+	thrust::device_ptr<PathSegment> paths_begin = thrust::device_pointer_cast(paths);
+	thrust::device_ptr<ShadeableIntersection> inter_begin = thrust::device_pointer_cast(intersections);
+	thrust::sort_by_key(thrust::device, inter_begin, inter_begin + N, paths_begin);
 }
 
 /**
@@ -436,7 +443,8 @@ void pathtrace(uchar4* pbo, int frame, int iter)
         // materials you have in the scenefile.
         // TODO: compare between directly shading the path segments and shading
         // path segments that have been reshuffled to be contiguous in memory.
-        streamCompaction(num_paths, dev_paths);
+        //sortByMaterial(active_paths, dev_paths, dev_intersections);
+        numblocksPathSegmentTracing = (active_paths + blockSize1d - 1) / blockSize1d;
         shadeFakeMaterial2 <<<numblocksPathSegmentTracing, blockSize1d>>>(
             iter,
             active_paths,
@@ -446,7 +454,7 @@ void pathtrace(uchar4* pbo, int frame, int iter)
         );
         dim3 numBlocksPixels = (active_paths + blockSize1d - 1) / blockSize1d;
         gatherTerminatedPaths << <numBlocksPixels, blockSize1d >> > (
-            num_paths,
+            active_paths,
             dev_image,
             dev_paths
         );
@@ -476,3 +484,14 @@ void pathtrace(uchar4* pbo, int frame, int iter)
 
     checkCUDAError("pathtrace");
 }
+/*
+3080 laptop:
+0 optimization
+30~40~50fps
+
+sort by material id
+20~ fps?? why is it lower
+
+2 stream compactio + sort by material id
+20~ fps
+*/

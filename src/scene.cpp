@@ -42,23 +42,18 @@ void Scene::loadFromJSON(const std::string& jsonName)
         const auto& name = item.key();
         const auto& p = item.value();
         Material newMaterial{};
-        // TODO: handle materials loading differently
-        if (p["TYPE"] == "Diffuse")
-        {
-            const auto& col = p["RGB"];
-            newMaterial.color = glm::vec3(col[0], col[1], col[2]);
-        }
-        else if (p["TYPE"] == "Emitting")
-        {
-            const auto& col = p["RGB"];
-            newMaterial.color = glm::vec3(col[0], col[1], col[2]);
-            newMaterial.emittance = p["EMITTANCE"];
-        }
-        else if (p["TYPE"] == "Specular")
-        {
-            const auto& col = p["RGB"];
-            newMaterial.color = glm::vec3(col[0], col[1], col[2]);
-        }
+        
+        // Load base color (required for all materials)
+        const auto& col = p["RGB"];
+        newMaterial.color = glm::vec3(col[0], col[1], col[2]);
+        
+        // Load PBR parameters with defaults
+        newMaterial.metallic = p.contains("METALLIC") ? (float)p["METALLIC"] : 0.0f;
+        newMaterial.roughness = p.contains("ROUGHNESS") ? (float)p["ROUGHNESS"] : 1.0f;
+        newMaterial.transparency = p.contains("TRANSPARENCY") ? (float)p["TRANSPARENCY"] : 0.0f;
+        newMaterial.indexOfRefraction = p.contains("IOR") ? (float)p["IOR"] : 1.5f;
+        newMaterial.emittance = p.contains("EMITTANCE") ? (float)p["EMITTANCE"] : 0.0f;
+        
         MatNameToID[name] = materials.size();
         materials.emplace_back(newMaterial);
     }

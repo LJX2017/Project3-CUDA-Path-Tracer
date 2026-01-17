@@ -35,16 +35,12 @@ struct Geom
 
 struct Material
 {
-    glm::vec3 color;
-    struct
-    {
-        float exponent;
-        glm::vec3 color;
-    } specular;
-    float hasReflective;
-    float hasRefractive;
-    float indexOfRefraction;
-    float emittance;
+    glm::vec3 color;          // Base color (albedo)
+    float metallic;           // 0 = dielectric, 1 = metal
+    float roughness;          // 0 = mirror, 1 = diffuse
+    float transparency;       // 0 = opaque, 1 = fully transparent
+    float indexOfRefraction;  // IOR for transparent materials (glass ~1.5, water ~1.33)
+    float emittance;          // Light emission intensity (0 = not emissive)
 };
 
 struct Camera
@@ -84,4 +80,7 @@ struct ShadeableIntersection
   float t;
   glm::vec3 surfaceNormal;
   int materialId;
+  __host__ __device__ bool operator<(const ShadeableIntersection& other) const {
+      return materialId < other.materialId; 
+  }
 };
